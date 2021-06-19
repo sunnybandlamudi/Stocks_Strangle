@@ -4,7 +4,6 @@ from calendar import format
 from json import JSONEncoder
 from pprint import pprint;
 import requests as req;
-import datetime
 from nsetools import nse
 from collections import  namedtuple;
 import schedule;
@@ -19,10 +18,6 @@ import pickle
 
 
 # logging.addHandler()
-
-log = "./logs"
-if not os.path.exists(log):
-    os.mkdir(log)
 
 head = {
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/84.0.4147.105 Safari/537.36",
@@ -71,15 +66,19 @@ parser.add_argument("--refresh", type=int ,default=5, help="number of epochs of 
 parser.add_argument("--profit", type=int ,default=2000, help="number of epochs of training")
 parser.add_argument("--expiry", type=int ,default=0, help="number of epochs of training")
 parser.add_argument("--print" , type=bool ,default=False, help="number of epochs of training")
+parser.add_argument("--skip_time" , type=bool ,default=False, help="number of epochs of training")
 parser.add_argument("--open_interest" , type=bool ,default=True, help="number of epochs of training")
 parser.add_argument("--pick" ,type=str, default=None, help="number of epochs of training")
 parser.add_argument("--init_trade" ,type=tuple_strike, default=None, help="number of epochs of training")
 
 cmd_arg = parser.parse_args();
 
-
 # a = os.system("sh cmd.sh")
 
+log = f"./logs/{cmd_arg.stock}"
+
+if not os.path.exists(log):
+    os.makedirs(log)
 
 
 class NseConnection:
@@ -159,6 +158,10 @@ class ObjectFactory:
         try:
             with open(path,"rb") as fd:
                 data = pickle.load(fd);
+                now = datetime.datetime.now().date();
+                exp = datetime.datetime.strptime(data.expiry, '%d-%b-%Y').date()
+                if exp < now:
+                    return None
                 return data;
         except:
             # print("not such dir")
@@ -176,7 +179,7 @@ class OptionChain():
         now = datetime.datetime.now()
         self.time_stamp = now.strftime("%Y-%m-%d_%H-%M-%S");
         self.straddle_point = DotMap();
-        logging.basicConfig(filename = f"logs/{self.stock}-{self.time_stamp}.log",format = '%(message)s', level=logging.INFO)
+        logging.basicConfig(filename = f"logs/{self.stock}/{self.stock}-{self.time_stamp}.log",format = '%(message)s', level=logging.INFO)
         # self.fd = open(f"strangle-data/trade-data/{self.time_stamp}","a");
 
         self.loader = ObjectFactory();
@@ -188,7 +191,7 @@ class OptionChain():
    
     def get_optionchain(self):
         try:
-            self.response = nseCon.get_optionchain(self.stock)
+            self.response = nse_con.get_optionchain(self.stock)
             self.records = self.response.records
             self.filtered = self.response.filtered
             self.ltp = self.records.underlyingValue;
@@ -361,7 +364,7 @@ class OptionChain():
             total = self.straddle_point.pe.lastPrice + self.straddle_point.ce.lastPrice;
             #print"Straddle")
             self.print("Straddle")
-
+            
             if((_pe.lastPrice + _ce.lastPrice) > (total + (total * self.straddle_adjustment))):
                 #print"Straddle > than",_pe.lastPrice + _ce.lastPrice,total);
                 self.print(f"Straddle > than,{_pe.lastPrice + _ce.lastPrice,total}");
@@ -384,7 +387,7 @@ class OptionChain():
                 else:
                     percent_premium -= 0.05
             # Checking if PE exceeded CE
-            if(pe.strikePrice > self.traded_price.ce.strikePrice):
+            if(pe.strikePrice >= self.traded_price.ce.strikePrice):
                 # Becomes Straddle
             
                 self.print("Making it Straddle")
@@ -409,7 +412,7 @@ class OptionChain():
                 else:
                     percent_premium -= 0.05;
 
-            if(ce.strikePrice < self.traded_price.pe.strikePrice):
+            if(ce.strikePrice <= self.traded_price.pe.strikePrice):
                 # Becomes Straddle
                 
                 self.print("Making it Straddle")
@@ -491,7 +494,7 @@ class OptionChain():
         self.update_option();
         current_time = datetime.datetime.now().time();
         market_time = datetime.time(15,30);
-        if current_time > market_time:
+        if current_time > market_time and not cmd_arg.skip_time:
             self.loader.save_object(self,"latest.pck");
             schedule.clear(self.stock)
         if save:
@@ -501,55 +504,43 @@ class OptionChain():
 
         schedule.every(t_seconds).seconds.do(self.get_update,save).tag(self.stock);
 
+def main():
+    
+    global nse_con,loader;
 
+    loader = ObjectFactory();
 
-loader = ObjectFactory();
+    nse_con = NseConnection();
+    
+    stock = loader.load_object(name = cmd_arg.pick,stock = cmd_arg.stock)
+    
+    if stock:
+        logging.basicConfig(filename = f"logs/{stock.stock}/{stock.stock}-{stock.time_stamp}.log",format = '%(message)s', level=logging.INFO)
+    else:
+        stock = OptionChain(stock=cmd_arg.stock, expiry=cmd_arg.expiry, min_profit= cmd_arg.profit)
+        if cmd_arg.trade:
+            stock.trade_setup(*cmd_arg.trade);
+        elif cmd_arg.init_trade:
+            stock.init_trade(*cmd_arg.init_trade)
+        elif cmd_arg.open_interest:
+            stock.trade_OI();
+    
+    stock.task_schedule(cmd_arg.refresh)
 
-nseCon = NseConnection();
-
-stock = loader.load_object(name = cmd_arg.pick,stock = cmd_arg.stock)
-
-if stock:
-    logging.basicConfig(filename = f"logs/{stock.stock}-{stock.time_stamp}.log",format = '%(message)s', level=logging.INFO)
-else:
-    stock = OptionChain(stock=cmd_arg.stock, expiry=cmd_arg.expiry, min_profit= cmd_arg.profit)
-    if cmd_arg.trade:
-        stock.trade_setup(*cmd_arg.trade);
-    elif cmd_arg.init_trade:
-        stock.init_trade(*cmd_arg.init_trade)
-    elif cmd_arg.open_interest:
-        stock.trade_OI();
-
-# stock.trade_setup(100,100);
-# stock.task_schedule(5)
-# obj = loader.load_object("abc")
-
-# stock.trade_setup(*cmd_arg.trade)
-
-
-# stock.trade_setup(300,400)
-
-# stock = OptionChain(stock=cmd_arg.stock)
-# stock.trade_setup(300,400);
-stock.task_schedule(cmd_arg.refresh)
-
-# while True:
-#     schedule.run_pending();
-#     if(not schedule.jobs):
-#         break;
-#     time.sleep(1);
-
-try:
-    while True:
-        schedule.run_pending();
-        if(not schedule.jobs):
-            break;
-        time.sleep(1);
-except:
-    loader.save_object(stock,"error.pck")
-    logging.exception("Error ")
-
-
-# d = nseCon.get_optionchain("NIFTY")
-
-
+    try:
+        while True:
+            schedule.run_pending();
+            if(not schedule.jobs):
+                break;
+            time.sleep(1);
+    except:
+        loader.save_object(stock,"error.pck")
+        logging.exception("Error ")
+    
+    
+    # d = nse_con.get_optionchain("NIFTY")
+    
+    
+    
+if __name__ == '__main__':
+    main()
